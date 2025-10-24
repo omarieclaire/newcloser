@@ -25,17 +25,18 @@
         z-index: 10;
       }
 
-      #debugPanel {
+   #debugPanel {
         position: absolute;
         top: 10px;
         right: 10px;
-        background: rgba(0, 0, 0, 0.8);
+        background: rgba(0, 0, 0, 0.9);
         color: #0f0;
         padding: 10px;
         border: 1px solid #0f0;
         font-size: 11px;
         display: none;
         z-index: 100;
+        min-width: 220px;
       }
 
       #debugPanel.active {
@@ -45,6 +46,23 @@
       #debugPanel label {
         display: block;
         margin: 3px 0;
+        cursor: pointer;
+      }
+
+      #debugPanel select {
+        width: 100%;
+        background: #000;
+        color: #0f0;
+        border: 1px solid #0f0;
+        padding: 3px;
+        margin: 5px 0;
+        font-size: 11px;
+      }
+
+      #debugPanel .hotkey {
+        color: #ff00ff;
+        font-weight: bold;
+        margin-right: 5px;
       }
 
       #videoDebug {
@@ -123,12 +141,20 @@
   <body>
     <canvas id="gameCanvas"></canvas>
 
-    <div id="debugPanel">
-      <strong>Debug Mode</strong>
-      <label><input type="checkbox" id="showVideo" /> Show Video</label>
-      <label><input type="checkbox" id="singlePlayerMode" /> Single Player</label>
-      <label><input type="checkbox" id="showInfo" /> Show Info</label>
-      <label><input type="checkbox" id="mirrorScreen" /> Mirror</label>
+   <div id="debugPanel">
+      <strong>Debug Mode (D)</strong>
+      <select id="cameraSelect">
+        <option value="">Loading cameras...</option>
+      </select>
+      <label><input type="checkbox" id="showVideo" /> <span class="hotkey">V</span>Show Video</label>
+      <label><input type="checkbox" id="singlePlayerMode" /> <span class="hotkey">S</span>Single Player</label>
+      <label><input type="checkbox" id="showInfo" /> <span class="hotkey">I</span>Show Info</label>
+      <label><input type="checkbox" id="mirrorScreen" /> <span class="hotkey">M</span>Mirror</label>
+      <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #0f0; font-size: 10px;">
+        <strong>Hotkeys:</strong><br>
+        <span class="hotkey">D</span>Debug | <span class="hotkey">R</span>Restart<br>
+        <span class="hotkey">P</span>Skip to Play | <span class="hotkey">F</span>Fullscreen
+      </div>
     </div>
 
     <div id="videoDebug">
@@ -283,6 +309,9 @@
       let elapsedTime = 0;
       let lastTime = Date.now();
       let gameStartTime = Date.now();
+
+      let availableCameras = [];
+      let currentCameraId = null;
 
       // Game state
       let game = {
@@ -710,13 +739,151 @@
           this.stars.forEach((s) => s.setColor(color));
         }
       }
+// ============================================
+      // CAMERA SELECTION HELPER
+      // ============================================
+      async function listCameras() {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        console.log('📷 Available cameras:', videoDevices.map(d => ({
+          label: d.label,
+          deviceId: d.deviceId
+        })));
+        availableCameras = videoDevices;
+        return videoDevices;
+      }
+
+      function populateCameraDropdown(cameras) {
+        const select = document.getElementById('cameraSelect');
+        select.innerHTML = '';
+        
+        cameras.forEach((camera, index) => {
+          const option = document.createElement('option');
+          option.value = camera.deviceId;
+          option.textContent = camera.label || `Camera ${index + 1}`;
+          select.appendChild(option);
+        });
+        
+        // Try to select RealSense by default
+        const realsenseIndex = cameras.findIndex(cam => 
+          cam.label.toLowerCase().includes('realsense') ||
+          cam.label.toLowerCase().includes('intel') ||
+          cam.label.toLowerCase().includes('d435')
+        );
+        
+        if (realsenseIndex !== -1) {
+          // select.selectedIndex = realsenseIndex;
+          // currentCameraId = cameras[realsenseIndex].deviceId;
+          // console.log('✅ Auto-selected RealSense camera:', cameras[realsenseIndex].label);
+        } else {
+          currentCameraId = cameras[0]?.deviceId || null;
+          console.log('⚠️ RealSense not found, using default camera');
+        }
+      }
+
+async function switchCamera(deviceId) {
+        console.log('🔄 Switching to camera:', deviceId);
+        
+        try {
+          // CRITICAL: Stop camera FIRST (before closing pose)
+          if (camera) {
+            camera.stop();
+          }
+          
+          // Wait for camera to fully stop
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Stop video stream
+          if (videoEl.srcObject) {
+            videoEl.srcObject.getTracks().forEach(track => track.stop());
+          }
+          
+          // Now safe to close pose
+          if (pose) {
+            await pose.close();
+            pose = null;
+          }
+          
+          // Update camera ID
+          currentCameraId = deviceId;
+          
+          // Additional delay for cleanup
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Start new camera with new constraints
+          const constraints = {
+            video: {
+              deviceId: { exact: currentCameraId },
+              width: 640,
+              height: 480
+            }
+          };
+          
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          videoEl.srcObject = stream;
+          
+          console.log('📹 New camera stream started');
+
+          // Reinitialize pose detector
+          pose = new Pose({
+            locateFile: (file) => {
+              return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            },
+          });
+
+          pose.setOptions({
+            modelComplexity: 0,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+          });
+
+          pose.onResults(onPoseResults);
+
+          // Create NEW camera instance
+          camera = new Camera(videoEl, {
+            onFrame: async () => {
+              if (pose) {  // Safety check
+                await pose.send({ image: videoEl });
+              }
+            },
+            width: 640,
+            height: 480,
+          });
+
+          await camera.start();
+          console.log('✅ Camera switched successfully to:', deviceId);
+          
+        } catch (error) {
+          console.error('❌ Error switching camera:', error);
+        }
+      }
 
       // ============================================
       // MEDIAPIPE INITIALIZATION
       // ============================================
+
+     // ============================================
+      // MEDIAPIPE INITIALIZATION
+      // ============================================
       async function initMediaPipe() {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          // ALWAYS list cameras first (even on first run)
+          if (availableCameras.length === 0) {
+            await listCameras();
+            populateCameraDropdown(availableCameras);
+          }
+          
+          // NOW currentCameraId is set, so use it
+          const constraints = {
+            video: currentCameraId ? 
+              { deviceId: { exact: currentCameraId }, width: 640, height: 480 } : 
+              { width: 640, height: 480 }
+          };
+          
+          console.log('🎥 Starting camera with deviceId:', currentCameraId);
+          
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
           videoEl.srcObject = stream;
 
           pose = new Pose({
@@ -736,7 +903,9 @@
 
           camera = new Camera(videoEl, {
             onFrame: async () => {
-              await pose.send({ image: videoEl });
+              if (pose) {  // Safety check
+                await pose.send({ image: videoEl });
+              }
             },
             width: 640,
             height: 480,
@@ -750,7 +919,7 @@
           throw error;
         }
       }
-
+     
       // ============================================
       // POSE DETECTION
       // ============================================
@@ -1483,7 +1652,7 @@
         const message = getCurrentMessage();
         if (message) {
           ctx.fillStyle = "#0f0";
-          ctx.font = "42px Georgia";
+          ctx.font = " 42px Georgia";
           ctx.fillText(message, canvas.width / 2, canvas.height * 0.15);
         }
 
@@ -1583,6 +1752,26 @@
             game.bDrawDebug = !game.bDrawDebug;
             document.getElementById("debugPanel").classList.toggle("active", game.bDrawDebug);
             break;
+          case "v":
+            const videoCheckbox = document.getElementById("showVideo");
+            videoCheckbox.checked = !videoCheckbox.checked;
+            document.getElementById("videoDebug").classList.toggle("active", videoCheckbox.checked);
+            break;
+          case "s":
+            const singlePlayerCheckbox = document.getElementById("singlePlayerMode");
+            singlePlayerCheckbox.checked = !singlePlayerCheckbox.checked;
+            game.singlePlayerMode = singlePlayerCheckbox.checked;
+            break;
+          case "m":
+            const mirrorCheckbox = document.getElementById("mirrorScreen");
+            mirrorCheckbox.checked = !mirrorCheckbox.checked;
+            game.mirrorScreen = mirrorCheckbox.checked;
+            break;
+          case "i":
+            const infoCheckbox = document.getElementById("showInfo");
+            infoCheckbox.checked = !infoCheckbox.checked;
+            game.showInfo = infoCheckbox.checked;
+            break;
           case "r":
             resetGame();
             game.currentScene = MODE_START;
@@ -1596,9 +1785,6 @@
             } else {
               document.exitFullscreen();
             }
-            break;
-          case "i":
-            game.showInfo = !game.showInfo;
             break;
         }
       });
@@ -1617,6 +1803,10 @@
 
       document.getElementById("mirrorScreen").addEventListener("change", (e) => {
         game.mirrorScreen = e.target.checked;
+      });
+
+      document.getElementById("cameraSelect").addEventListener("change", async (e) => {
+        await switchCamera(e.target.value);
       });
 
       // ============================================
