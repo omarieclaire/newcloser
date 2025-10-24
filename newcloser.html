@@ -1,0 +1,1479 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CLOSER - A Cooperative Game</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        overflow: hidden;
+        font-family: "Ayuthaya", "Georgia", serif;
+        background: #000;
+      }
+
+      #gameCanvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        position: relative;
+        z-index: 10;
+      }
+
+      #debugPanel {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(0, 0, 0, 0.8);
+        color: #0f0;
+        padding: 10px;
+        border: 1px solid #0f0;
+        font-size: 11px;
+        display: none;
+        z-index: 100;
+      }
+
+      #debugPanel.active {
+        display: block;
+      }
+
+      #debugPanel label {
+        display: block;
+        margin: 3px 0;
+      }
+
+      #videoDebug {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 1;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+        z-index: 100;
+      }
+
+      #videoDebug.active {
+        opacity: 0.3;
+      }
+
+      #videoDebug video {
+        display: none;
+      }
+
+      #videoDebug canvas {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        transform: scaleX(-1);
+      }
+
+      #loadingScreen {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #0f0;
+        font-size: 24px;
+        z-index: 1000;
+      }
+
+      #loadingScreen .instructions {
+        margin-top: 40px;
+        font-size: 16px;
+        color: #ff00ff;
+        text-align: center;
+        max-width: 600px;
+        line-height: 1.6;
+      }
+
+      .spinner {
+        border: 4px solid rgba(0, 255, 0, 0.3);
+        border-top: 4px solid #0f0;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        animation: spin 1s linear infinite;
+        margin-top: 20px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="debugPanel">
+      <strong>Debug Mode</strong>
+      <label><input type="checkbox" id="showVideo" /> Show Video</label>
+      <label><input type="checkbox" id="singlePlayerMode" /> Single Player</label>
+      <label><input type="checkbox" id="showInfo" /> Show Info</label>
+      <label><input type="checkbox" id="mirrorScreen" /> Mirror</label>
+    </div>
+
+    <div id="videoDebug">
+      <video id="webcam" autoplay playsinline></video>
+      <canvas id="videoCanvas"></canvas>
+    </div>
+
+    <div id="loadingScreen">
+      <div>Loading CLOSER...</div>
+      <div class="spinner"></div>
+      <div id="loadingStatus" style="margin-top: 20px; font-size: 16px">Initializing camera...</div>
+      <div class="instructions">
+        <p><strong>Controls:</strong></p>
+        <p>D - Toggle debug | R - Restart | P - Skip to play | F - Fullscreen | I - Info</p>
+        <p><strong>Single Player Mode:</strong> Use both hands (checkbox in debug)</p>
+        <p><strong>Two Player Mode:</strong> Stand side by side (default)</p>
+        <p style="margin-top: 10px; color: #0f0"><strong>Click anywhere to enable sound</strong></p>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+    <script>
+      // ============================================
+      // CONSTANTS FROM ORIGINAL
+      // ============================================
+      const INTIMACY_THRESHOLD = 600;
+      const NUM_SPARKLES = 1500;
+      const LEVEL_HEIGHT = 16383;
+
+      // Game modes
+      const MODE_TITLE_SCREEN = 0;
+      const MODE_START = 1;
+      const MODE_TRANSITION = 2;
+      const MODE_PLAY = 3;
+      const MODE_GAME_OVER = 4;
+
+      // Particle modes
+      const PARTICLE_MODE_ATTRACT = 0;
+      const PARTICLE_MODE_REPEL = 1;
+      const PARTICLE_MODE_NEAREST_POINTS = 2;
+      const PARTICLE_MODE_NOISE = 3;
+
+      // ============================================
+      // AUDIO SYSTEM - Using Original Sound Files
+      // ============================================
+      const sounds = {
+        synth: null,
+        beat: null,
+        synth2: null,
+        fill: null,
+        pop: null,
+      };
+
+      let audioInitialized = false;
+
+      function loadSounds() {
+        // Load all sounds from the original game
+        sounds.synth = new Audio("sounds/synth.mp3");
+        sounds.synth.loop = true;
+        sounds.synth.volume = 0.3;
+
+        sounds.beat = new Audio("sounds/beat.wav");
+        sounds.beat.loop = true;
+        sounds.beat.volume = 0.2;
+
+        sounds.synth2 = new Audio("sounds/closerPoint.mp3");
+        sounds.synth2.volume = 1.0;
+
+        sounds.fill = new Audio("sounds/death2.mp3");
+        sounds.fill.volume = 0.5;
+
+        sounds.pop = new Audio("sounds/popp.mp3");
+        sounds.pop.volume = 0.8;
+
+        audioInitialized = true;
+      }
+
+      function playSound(soundName) {
+        if (!audioInitialized) return;
+        if (sounds[soundName]) {
+          sounds[soundName].currentTime = 0;
+          sounds[soundName].play().catch((e) => console.log("Audio play failed:", e));
+        }
+      }
+
+      function setSoundSpeed(soundName, speed) {
+        if (!audioInitialized) return;
+        if (sounds[soundName]) {
+          sounds[soundName].playbackRate = speed;
+        }
+      }
+
+      // Enable audio on first user interaction
+      document.addEventListener(
+        "click",
+        () => {
+          if (!audioInitialized) {
+            console.log("Loading sounds...");
+            loadSounds();
+            console.log("Sounds loaded!");
+          }
+        },
+        { once: true }
+      );
+
+      // ALSO try on any key press
+      document.addEventListener(
+        "keydown",
+        () => {
+          if (!audioInitialized) {
+            console.log("Loading sounds...");
+            loadSounds();
+            console.log("Sounds loaded!");
+          }
+        },
+        { once: true }
+      );
+
+      // ============================================
+      // GLOBAL VARIABLES
+      // ============================================
+      const canvas = document.getElementById("gameCanvas");
+      const ctx = canvas.getContext("2d");
+      const videoEl = document.getElementById("webcam");
+      const videoCanvas = document.getElementById("videoCanvas");
+      const videoCtx = videoCanvas.getContext("2d");
+
+      let pose = null;
+      let camera = null;
+      let elapsedTime = 0;
+      let lastTime = Date.now();
+      let gameStartTime = Date.now();
+
+      // Game state
+      let game = {
+        currentScene: MODE_TITLE_SCREEN,
+        intimacyCounter: 0,
+        scoreCounter: 0,
+        highScore: 0,
+        newHighScore: false,
+        playerDistance: 0,
+
+        // Glowball
+        glowBall: { x: 0, y: 0 },
+        glowBallWidth: 0,
+        glowBallRise: 0,
+
+        // Colors
+        glowballTransparency: 180,
+        glowballColor: { r: 0, g: 0, b: 255 },
+        triangleInteriorColor: { r: 255, g: 0, b: 255, a: 100 },
+        triangleOutlineColor: { r: 255, g: 10, b: 255, a: 200 },
+        starColor: { r: 0, g: 0, b: 255 },
+
+        // Players
+        blobCenter1: { x: 0, y: 0 },
+        blobCenter2: { x: 0, y: 0 },
+        blendCenter1: { x: 0, y: 0 },
+        blendCenter2: { x: 0, y: 0 },
+        radiusOfBlob1: 50,
+        radiusOfBlob2: 50,
+
+        // Flags
+        handsDetected: false,
+        badCollision: false,
+
+        // Timing
+        timeGameOverSceneStarted: 0,
+        sceneStartTime: 0,
+
+        // Arrays
+        sparkles: [],
+        sparkles2: [],
+        level: null,
+
+        // Settings
+        showInfo: false,
+        bDrawDebug: false,
+        mirrorScreen: false,
+        singlePlayerMode: false,
+
+        // Speed
+        triangleSpeed: 0,
+        triangleSpeedIncrease: 0,
+        modeStartGlowRiseIntimacyFactor: 0.8,
+        modePlayGlowRiseFactor: 0.09,
+      };
+
+      // ============================================
+      // CANVAS SETUP
+      // ============================================
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        videoCanvas.width = window.innerWidth;
+        videoCanvas.height = window.innerHeight;
+      }
+      resizeCanvas();
+      window.addEventListener("resize", resizeCanvas);
+
+      // ============================================
+      // TIMING
+      // ============================================
+      function getElapsedTime() {
+        return (Date.now() - gameStartTime) / 1000;
+      }
+
+      function getElapsedTimeMillis() {
+        return Date.now() - gameStartTime;
+      }
+
+      function resetElapsedTime() {
+        gameStartTime = Date.now();
+      }
+
+      // ============================================
+      // PARTICLE CLASS - EXACT COPY
+      // ============================================
+      class demoParticle {
+        constructor(aPoint = null) {
+          this.attractPt = aPoint || { x: canvas.width / 2, y: canvas.height / 2 };
+          this.mode = PARTICLE_MODE_ATTRACT;
+          this.colourRed = 255;
+          this.colourGreen = 63;
+          this.colourBlue = 180;
+          this.attractPoints = null;
+          this.reset();
+        }
+
+        setMode(newMode) {
+          this.mode = newMode;
+        }
+
+        setAttractPoint(newAttractPt) {
+          this.attractPt = newAttractPt;
+        }
+
+        setColour(red, green, blue) {
+          this.colourRed = red;
+          this.colourGreen = green;
+          this.colourBlue = blue;
+        }
+
+        reset() {
+          this.uniqueVal = (Math.random() - 0.5) * 20000;
+          this.pos = {
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+          };
+          this.vel = {
+            x: (Math.random() - 0.5) * 7.8,
+            y: (Math.random() - 0.5) * 7.8,
+          };
+          this.frc = { x: 0, y: 0 };
+          this.scale = Math.random() * 0.8 + 0.1;
+
+          if (this.mode === PARTICLE_MODE_NOISE) {
+            this.drag = 0.97 + Math.random() * 0.02;
+            this.vel.y = Math.abs(this.vel.y) * 3.0;
+          } else {
+            this.drag = 0.95 + Math.random() * 0.048;
+          }
+        }
+
+        update() {
+          if (this.mode === PARTICLE_MODE_ATTRACT) {
+            this.frc.x = this.attractPt.x - this.pos.x;
+            this.frc.y = this.attractPt.y - this.pos.y;
+            const len = Math.sqrt(this.frc.x * this.frc.x + this.frc.y * this.frc.y);
+            if (len > 0) {
+              this.frc.x /= len;
+              this.frc.y /= len;
+            }
+            this.vel.x *= this.drag;
+            this.vel.y *= this.drag;
+            this.vel.x += this.frc.x * 0.6;
+            this.vel.y += this.frc.y * 0.6;
+          } else if (this.mode === PARTICLE_MODE_REPEL) {
+            this.frc.x = game.glowBall.x - this.pos.x;
+            this.frc.y = game.glowBall.y - this.pos.y;
+            const dist = Math.sqrt(this.frc.x * this.frc.x + this.frc.y * this.frc.y);
+
+            if (dist > 0) {
+              this.frc.x /= dist;
+              this.frc.y /= dist;
+            }
+
+            this.vel.x *= this.drag;
+            this.vel.y *= this.drag;
+
+            if (dist < 150) {
+              this.vel.x += -this.frc.x * 0.6;
+              this.vel.y += -this.frc.y * 0.6;
+            } else {
+              const time = Date.now() * 0.0002;
+              this.frc.x = Math.sin(this.uniqueVal + this.pos.y * 0.01 + time) * 2 - 1;
+              this.frc.y = Math.sin(this.uniqueVal + this.pos.x * 0.01 + time) * 2 - 1;
+              this.vel.x += this.frc.x * 0.04;
+              this.vel.y += this.frc.y * 0.04;
+            }
+          }
+
+          // Update position
+          this.pos.x += this.vel.x;
+          this.pos.y += this.vel.y;
+
+          // Bounds
+          if (this.pos.x > canvas.width) {
+            this.pos.x = canvas.width;
+            this.vel.x *= -1.0;
+          } else if (this.pos.x < 0) {
+            this.pos.x = 0;
+            this.vel.x *= -1.0;
+          }
+          if (this.pos.y > canvas.height) {
+            this.pos.y = canvas.height;
+            this.vel.y *= -1.0;
+          } else if (this.pos.y < 0) {
+            this.pos.y = 0;
+            this.vel.y *= -1.0;
+          }
+        }
+
+        draw() {
+          if (this.mode === PARTICLE_MODE_ATTRACT) {
+            ctx.fillStyle = `rgb(${this.colourRed}, ${this.colourGreen}, ${this.colourBlue})`;
+          } else if (this.mode === PARTICLE_MODE_REPEL) {
+            ctx.fillStyle = "rgb(208, 255, 63)";
+          }
+
+          ctx.beginPath();
+          ctx.arc(this.pos.x, this.pos.y, this.scale * 4.0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ============================================
+      // TRIANGLE CLASS - 3 POINT VERSION
+      // ============================================
+      class Triangle {
+        constructor(a, b, c) {
+          this.a = { x: a.x, y: a.y };
+          this.b = { x: b.x, y: b.y };
+          this.c = { x: c.x, y: c.y };
+          this.interior = { r: 255, g: 0, b: 255, a: 100 };
+          this.outline = { r: 255, g: 10, b: 255, a: 200 };
+        }
+
+        peak() {
+          return this.b;
+        }
+
+        draw() {
+          ctx.fillStyle = `rgba(${this.interior.r}, ${this.interior.g}, ${this.interior.b}, ${this.interior.a / 255})`;
+          ctx.beginPath();
+          ctx.moveTo(this.a.x, this.a.y);
+          ctx.lineTo(this.b.x, this.b.y);
+          ctx.lineTo(this.c.x, this.c.y);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.strokeStyle = `rgba(${this.outline.r}, ${this.outline.g}, ${this.outline.b}, ${this.outline.a / 255})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(this.a.x, this.a.y);
+          ctx.lineTo(this.b.x, this.b.y);
+          ctx.lineTo(this.c.x, this.c.y);
+          ctx.lineTo(this.a.x, this.a.y);
+          ctx.stroke();
+        }
+
+        doesIntersect(center, radius) {
+          for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            const x = center.x + radius * Math.cos(angle);
+            const y = center.y + radius * Math.sin(angle);
+
+            if (this.pointInTriangle(x, y)) {
+              return true;
+            }
+          }
+          return false;
+        }
+
+        pointInTriangle(px, py) {
+          const v0x = this.c.x - this.a.x;
+          const v0y = this.c.y - this.a.y;
+          const v1x = this.b.x - this.a.x;
+          const v1y = this.b.y - this.a.y;
+          const v2x = px - this.a.x;
+          const v2y = py - this.a.y;
+
+          const dot00 = v0x * v0x + v0y * v0y;
+          const dot01 = v0x * v1x + v0y * v1y;
+          const dot02 = v0x * v2x + v0y * v2y;
+          const dot11 = v1x * v1x + v1y * v1y;
+          const dot12 = v1x * v2x + v1y * v2y;
+
+          const invDenom = 1 / (dot00 * dot11 - dot01 * dot01);
+          const u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+          const v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+
+          return u >= 0 && v >= 0 && u + v <= 1;
+        }
+
+        moveY(amount) {
+          this.a.y += amount;
+          this.b.y += amount;
+          this.c.y += amount;
+
+          const screenHeight = canvas.height;
+
+          if (this.a.y >= screenHeight) {
+            const height = Math.abs(this.a.y - this.c.y);
+            this.a.y = 0 - LEVEL_HEIGHT;
+            this.b.y = this.a.y + height / 2;
+            this.c.y = this.a.y + height;
+          }
+        }
+
+        setColor(interior, outline) {
+          this.interior = interior;
+          this.outline = outline;
+        }
+      }
+
+      // ============================================
+      // STAR CLASS
+      // ============================================
+      class Star {
+        constructor(t1, t2) {
+          const width = Math.abs(t1.peak().x - t2.peak().x);
+          const height = Math.abs(t1.peak().y - t2.peak().y);
+
+          if (t1.peak().x <= t2.peak().x) {
+            this.point = {
+              x: t1.peak().x + width / 2,
+              y: t1.peak().y <= t2.peak().y ? t1.peak().y + height / 2 : t1.peak().y - height / 2,
+            };
+          } else {
+            this.point = {
+              x: t1.peak().x - width / 2,
+              y: t1.peak().y <= t2.peak().y ? t1.peak().y + height / 2 : t1.peak().y - height / 2,
+            };
+          }
+
+          this.isCollided = false;
+          this.radius = 5.0;
+          this.damping = 60;
+          this.color = { r: 0, g: 0, b: 255 };
+        }
+
+        draw() {
+          if (this.isCollided && this.damping > 0) {
+            this.damping -= 1;
+            ctx.fillStyle = `rgba(${this.color.r}, ${this.color.g}, ${this.color.b}, ${this.damping / 60})`;
+          } else if (!this.isCollided) {
+            ctx.fillStyle = `rgb(${this.color.r}, ${this.color.g}, ${this.color.b})`;
+          }
+
+          if (!this.isCollided || this.damping > 0) {
+            ctx.beginPath();
+            ctx.arc(this.point.x, this.point.y, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        doesIntersect(center, radius) {
+          if (this.isCollided) return false;
+
+          const dx = this.point.x - center.x;
+          const dy = this.point.y - center.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          if (distance <= radius + this.radius) {
+            this.isCollided = true;
+            return true;
+          }
+          return false;
+        }
+
+        moveY(amount) {
+          this.point.y += amount;
+
+          const screenHeight = canvas.height;
+          if (this.point.y >= screenHeight) {
+            this.point.y = 0 - LEVEL_HEIGHT;
+            this.isCollided = false;
+            this.damping = 60;
+          }
+        }
+
+        setColor(color) {
+          this.color = color;
+        }
+      }
+
+      // ============================================
+      // LEVEL CLASS
+      // ============================================
+      class Level {
+        constructor() {
+          this.height = LEVEL_HEIGHT;
+          this.screenHeight = canvas.height;
+          this.triangles = [];
+          this.stars = [];
+        }
+
+        clearTriangles() {
+          this.triangles = [];
+        }
+
+        clearStars() {
+          this.stars = [];
+        }
+
+        addTriangle(t) {
+          this.triangles.push(t);
+        }
+
+        createStars() {
+          this.triangles.sort((t1, t2) => t2.peak().y - t1.peak().y);
+
+          if (this.triangles.length > 2) {
+            for (let i = 0; i < this.triangles.length - 1; i++) {
+              this.stars.push(new Star(this.triangles[i], this.triangles[i + 1]));
+            }
+          } else if (this.triangles.length === 2) {
+            this.stars.push(new Star(this.triangles[0], this.triangles[1]));
+          }
+        }
+
+        draw() {
+          this.triangles.forEach((t) => t.draw());
+          this.stars.forEach((s) => s.draw());
+        }
+
+        moveY(amount) {
+          this.triangles.forEach((t) => t.moveY(amount));
+          this.stars.forEach((s) => s.moveY(amount));
+        }
+
+        doesIntersectTriangle(center, radius) {
+          return this.triangles.some((t) => t.doesIntersect(center, radius));
+        }
+
+        doesIntersectStar(center, radius) {
+          return this.stars.some((s) => s.doesIntersect(center, radius));
+        }
+
+        setTrianglesColor(interior, outline) {
+          this.triangles.forEach((t) => t.setColor(interior, outline));
+        }
+
+        setStarColor(color) {
+          this.stars.forEach((s) => s.setColor(color));
+        }
+      }
+
+      // ============================================
+      // MEDIAPIPE INITIALIZATION
+      // ============================================
+      async function initMediaPipe() {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          videoEl.srcObject = stream;
+
+          pose = new Pose({
+            locateFile: (file) => {
+              return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            },
+          });
+
+          pose.setOptions({
+            modelComplexity: 0,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+          });
+
+          pose.onResults(onPoseResults);
+
+          camera = new Camera(videoEl, {
+            onFrame: async () => {
+              await pose.send({ image: videoEl });
+            },
+            width: 640,
+            height: 480,
+          });
+
+          await camera.start();
+          document.getElementById("loadingScreen").style.display = "none";
+        } catch (error) {
+          console.error("MediaPipe init error:", error);
+          document.getElementById("loadingStatus").textContent = "Camera initialization failed";
+          throw error;
+        }
+      }
+
+      // ============================================
+      // POSE DETECTION
+      // ============================================
+      function onPoseResults(results) {
+        if (results.poseLandmarks) {
+          const landmarks = results.poseLandmarks;
+
+          if (game.singlePlayerMode) {
+            if (landmarks[15] && landmarks[16]) {
+              const mirrorFactor = game.mirrorScreen ? 1 : -1;
+              game.blobCenter1.x = (0.5 + mirrorFactor * (landmarks[15].x - 0.5)) * canvas.width;
+              game.blobCenter1.y = landmarks[15].y * canvas.height;
+              game.blobCenter2.x = (0.5 + mirrorFactor * (landmarks[16].x - 0.5)) * canvas.width;
+              game.blobCenter2.y = landmarks[16].y * canvas.height;
+              game.handsDetected = true;
+            }
+          } else {
+            const leftShoulder = landmarks[11];
+            const rightShoulder = landmarks[12];
+            const leftHip = landmarks[23];
+            const rightHip = landmarks[24];
+
+            if (leftShoulder && rightShoulder && leftHip && rightHip) {
+              const leftTorsoX = (leftShoulder.x + leftHip.x) / 2;
+              const leftTorsoY = (leftShoulder.y + leftHip.y) / 2;
+              const rightTorsoX = (rightShoulder.x + rightHip.x) / 2;
+              const rightTorsoY = (rightShoulder.y + rightHip.y) / 2;
+
+              const mirrorFactor = game.mirrorScreen ? 1 : -1;
+
+              game.blobCenter1.x = (0.5 + mirrorFactor * (leftTorsoX - 0.5)) * canvas.width;
+              game.blobCenter1.y = leftTorsoY * canvas.height;
+
+              game.blobCenter2.x = (0.5 + mirrorFactor * (rightTorsoX - 0.5)) * canvas.width;
+              game.blobCenter2.y = rightTorsoY * canvas.height;
+
+              game.handsDetected = true;
+            }
+          }
+
+          // Smooth blending
+          const blendFactor = 0.2;
+          game.blendCenter1.x = game.blendCenter1.x * (1 - blendFactor) + game.blobCenter1.x * blendFactor;
+          game.blendCenter1.y = game.blendCenter1.y * (1 - blendFactor) + game.blobCenter1.y * blendFactor;
+          game.blendCenter2.x = game.blendCenter2.x * (1 - blendFactor) + game.blobCenter2.x * blendFactor;
+          game.blendCenter2.y = game.blendCenter2.y * (1 - blendFactor) + game.blobCenter2.y * blendFactor;
+
+          // Calculate distance
+          const dx = game.blendCenter1.x - game.blendCenter2.x;
+          const dy = game.blendCenter1.y - game.blendCenter2.y;
+          game.playerDistance = Math.sqrt(dx * dx + dy * dy);
+        } else {
+          game.handsDetected = false;
+        }
+
+     // Draw debug video
+if (game.bDrawDebug && document.getElementById("showVideo").checked) {
+  videoCtx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+  
+  // Video drawing (keep as is - it's working correctly)
+  videoCtx.save();
+  if (game.mirrorScreen) {
+    videoCtx.scale(-1, 1);
+    videoCtx.drawImage(videoEl, -videoCanvas.width, 0, videoCanvas.width, videoCanvas.height);
+  } else {
+    videoCtx.drawImage(videoEl, 0, 0, videoCanvas.width, videoCanvas.height);
+  }
+  videoCtx.restore();
+  
+  if (results.poseLandmarks) {
+    // Simple: just use the landmarks directly - they should match the video
+    drawConnectors(videoCtx, results.poseLandmarks, POSE_CONNECTIONS, {
+      color: "#00ff00",
+      lineWidth: 2,
+    });
+    drawLandmarks(videoCtx, results.poseLandmarks, {
+      color: "#ff0000",
+      lineWidth: 1,
+      radius: 3,
+    });
+    
+    // Draw pink circles where the game thinks the hands are
+    if (game.singlePlayerMode && results.poseLandmarks[15] && results.poseLandmarks[16]) {
+      const mirrorFactor = game.mirrorScreen ? 1 : -1;
+      
+      videoCtx.fillStyle = "rgba(255, 0, 255, 0.5)";
+      
+      // Left hand (landmark 15)
+      const hand1X = (0.5 + mirrorFactor * (results.poseLandmarks[15].x - 0.5)) * videoCanvas.width;
+      const hand1Y = results.poseLandmarks[15].y * videoCanvas.height;
+      videoCtx.beginPath();
+      videoCtx.arc(hand1X, hand1Y, 10, 0, Math.PI * 2);
+      videoCtx.fill();
+      
+      // Right hand (landmark 16)
+      const hand2X = (0.5 + mirrorFactor * (results.poseLandmarks[16].x - 0.5)) * videoCanvas.width;
+      const hand2Y = results.poseLandmarks[16].y * videoCanvas.height;
+      videoCtx.beginPath();
+      videoCtx.arc(hand2X, hand2Y, 10, 0, Math.PI * 2);
+      videoCtx.fill();
+    }
+  }
+}
+      }
+
+      // ============================================
+      // RESET GAME - EXACT COPY
+      // ============================================
+      function resetGame() {
+        game.playerDistance = 0;
+        game.blendCenter1 = { x: 0, y: 0 };
+        game.blendCenter2 = { x: 0, y: 0 };
+        game.currentScene = MODE_TITLE_SCREEN;
+
+        game.glowballColor = { r: 0, g: 0, b: 255 };
+        game.triangleInteriorColor = { r: 255, g: 0, b: 255, a: 100 };
+        game.triangleOutlineColor = { r: 255, g: 10, b: 255, a: 200 };
+        game.starColor = { r: 0, g: 0, b: 255 };
+
+        game.sparkles = [];
+        game.sparkles2 = [];
+        const initialPoint = { x: 300, y: 300 };
+        for (let i = 0; i < NUM_SPARKLES; i++) {
+          const p1 = new demoParticle(initialPoint);
+          const p2 = new demoParticle(initialPoint);
+          p1.setMode(PARTICLE_MODE_ATTRACT);
+          p2.setMode(PARTICLE_MODE_ATTRACT);
+          game.sparkles.push(p1);
+          game.sparkles2.push(p2);
+        }
+
+        const screenWidth = canvas.width;
+        const screenHeight = canvas.height;
+
+        game.level = new Level();
+        game.level.setHeight = LEVEL_HEIGHT;
+        game.level.screenHeight = screenHeight;
+
+        // LEFT side triangles
+        game.level.addTriangle(new Triangle({ x: 0, y: 0 - 16383 }, { x: 700, y: 276.107 - 16383 }, { x: 0, y: 552.215 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 581.301 - 16383 }, { x: 700, y: 947.444 - 16383 }, { x: 0, y: 1313.587 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 1622.525 - 16383 }, { x: 600, y: 1822.444 - 16383 }, { x: 0, y: 2022.363 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 2617.027 - 16383 }, { x: 700, y: 2844.87 - 16383 }, { x: 0, y: 3072.714 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 3511.872 - 16383 }, { x: 800, y: 3943.795 - 16383 }, { x: 0, y: 4375.718 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 4222.144 - 16383 }, { x: 800, y: 4630.303 - 16383 }, { x: 0, y: 5038.463 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 5500.167 - 16383 }, { x: 640, y: 5776.267 - 16383 }, { x: 0, y: 6052.368 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 6307.993 - 16383 }, { x: 528.14, y: 6535.836 - 16383 }, { x: 0, y: 6763.679 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 7124.104 - 16383 }, { x: 716.748, y: 7433.314 - 16383 }, { x: 0, y: 7742.524 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 8390.451 - 16383 }, { x: 716.748, y: 8699.661 - 16383 }, { x: 0, y: 9008.871 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 9535.604 - 16383 }, { x: 567.284, y: 9780.334 - 16383 }, { x: 0, y: 10025.065 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 10188.494 - 16383 }, { x: 716, y: 10596.653 - 16383 }, { x: 0, y: 11004.813 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 11552.926 - 16383 }, { x: 716, y: 11961.085 - 16383 }, { x: 0, y: 12369.245 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 12866.191 - 16383 }, { x: 715, y: 13274.351 - 16383 }, { x: 0, y: 13682.511 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 13935.19 - 16383 }, { x: 716.748, y: 14244.4 - 16383 }, { x: 0, y: 14553.611 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 14573.886 - 16383 }, { x: 650, y: 14822.485 - 16383 }, { x: 0, y: 15071.086 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 15329.592 - 16383 }, { x: 300, y: 15533.672 - 16383 }, { x: 0, y: 15737.752 - 16383 }));
+        game.level.addTriangle(new Triangle({ x: 0, y: 15941.831 - 16383 }, { x: 200, y: 16050.318 - 16383 }, { x: 0, y: 16158.806 - 16383 }));
+
+        // RIGHT side triangles
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 14285.331 - 16383 },
+            { x: screenWidth - 1000, y: 14528.322 - 16383 },
+            { x: screenWidth, y: 14771.312 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 15329.592 - 16383 },
+            { x: screenWidth - 806.943, y: 15533.672 - 16383 },
+            { x: screenWidth, y: 15737.752 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 15980.863 - 16383 },
+            { x: screenWidth - 700, y: 16124.904 - 16383 },
+            { x: screenWidth, y: 16268.946 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 13339.246 - 16383 },
+            { x: screenWidth - 716.748, y: 13582.236 - 16383 },
+            { x: screenWidth, y: 13825.227 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 12216.091 - 16383 },
+            { x: screenWidth - 700, y: 12624.25 - 16383 },
+            { x: screenWidth, y: 13032.409 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 11095.331 - 16383 },
+            { x: screenWidth - 700, y: 11492.926 - 16383 },
+            { x: screenWidth, y: 11890.521 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 9537.344 - 16383 },
+            { x: screenWidth - 716.748, y: 9780.334 - 16383 },
+            { x: screenWidth, y: 10023.324 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 8672.003 - 16383 },
+            { x: screenWidth - 666, y: 9110.283 - 16383 },
+            { x: screenWidth, y: 9548.561 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 7755.767 - 16383 },
+            { x: screenWidth - 716, y: 8163.926 - 16383 },
+            { x: screenWidth, y: 8572.085 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle({ x: screenWidth, y: 6812.5 - 16383 }, { x: screenWidth - 700, y: 7160.621 - 16383 }, { x: screenWidth, y: 7508.742 - 16383 })
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 6259.736 - 16383 },
+            { x: screenWidth - 640, y: 6535.836 - 16383 },
+            { x: screenWidth, y: 6811.937 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 4959.948 - 16383 },
+            { x: screenWidth - 700, y: 5368.107 - 16383 },
+            { x: screenWidth, y: 5776.267 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 4108.965 - 16383 },
+            { x: screenWidth - 716.748, y: 4351.955 - 16383 },
+            { x: screenWidth, y: 4594.946 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 2692.438 - 16383 },
+            { x: screenWidth - 700, y: 3028.678 - 16383 },
+            { x: screenWidth, y: 3364.917 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle(
+            { x: screenWidth, y: 2109.568 - 16383 },
+            { x: screenWidth - 800, y: 2510.519 - 16383 },
+            { x: screenWidth, y: 2911.469 - 16383 }
+          )
+        );
+        game.level.addTriangle(
+          new Triangle({ x: screenWidth, y: 1528.1 - 16383 }, { x: screenWidth - 800, y: 1804.2 - 16383 }, { x: screenWidth, y: 2080.3 - 16383 })
+        );
+        game.level.addTriangle(
+          new Triangle({ x: screenWidth, y: 215.975 - 16383 }, { x: screenWidth - 700, y: 552.214 - 16383 }, { x: screenWidth, y: 888.454 - 16383 })
+        );
+
+        game.level.createStars();
+        game.level.setTrianglesColor(game.triangleInteriorColor, game.triangleOutlineColor);
+        game.level.setStarColor(game.starColor);
+
+        game.intimacyCounter = 0;
+        game.scoreCounter = 0;
+        game.newHighScore = false;
+        game.glowBallRise = 0;
+        game.glowBallWidth = 0;
+        game.badCollision = false;
+
+        resetElapsedTime();
+      }
+
+      // ============================================
+      // GAME UPDATE - MATCHING ORIGINAL FLOW
+      // ============================================
+      function updateGame() {
+        elapsedTime = getElapsedTime();
+
+        // If hands are NOT detected, only allow certain scenes to continue
+        if (!game.handsDetected) {
+          // In TITLE_SCREEN, we can wait for players
+          if (game.currentScene === MODE_TITLE_SCREEN) {
+            return; // Just wait
+          }
+
+          // In START mode, if players leave, freeze everything
+          if (game.currentScene === MODE_START) {
+            return; // Don't update anything
+          }
+
+          // In PLAY mode, if players disappear the glowball should freeze where it is
+          // and inevitably hit a triangle since triangles keep moving
+          if (game.currentScene === MODE_PLAY) {
+            // Keep triangles moving even without players
+            game.scoreCounter += 0.1;
+            game.triangleSpeedIncrease = game.scoreCounter / 500;
+            game.triangleSpeed = 2.0 + game.triangleSpeedIncrease; // Fixed speed when no players
+            game.level.moveY(game.triangleSpeed);
+
+            // Check collision with frozen glowball
+            if (game.level.doesIntersectTriangle(game.glowBall, game.glowBallWidth)) {
+              game.badCollision = true;
+              playSound("pop");
+            }
+
+            if (game.badCollision) {
+              game.currentScene = MODE_GAME_OVER;
+              game.timeGameOverSceneStarted = getElapsedTimeMillis();
+
+              if (audioInitialized) {
+                sounds.synth.pause();
+                playSound("fill");
+              }
+
+              for (let i = 0; i < NUM_SPARKLES; i++) {
+                game.sparkles[i].setMode(PARTICLE_MODE_REPEL);
+                game.sparkles2[i].setMode(PARTICLE_MODE_REPEL);
+              }
+
+              if (!game.newHighScore && game.scoreCounter > game.highScore) {
+                game.newHighScore = true;
+                game.highScore = game.scoreCounter;
+              }
+            }
+            return; // Don't update glowball or sparkles
+          }
+
+          // GAME_OVER can continue without players
+        }
+
+        if (game.handsDetected && game.blendCenter1.x > 0 && game.blendCenter2.x > 0) {
+          // Update intimacy counter based on distance
+          if (game.playerDistance < INTIMACY_THRESHOLD && game.intimacyCounter < NUM_SPARKLES) {
+            game.intimacyCounter++;
+          } else if (game.playerDistance >= INTIMACY_THRESHOLD && game.intimacyCounter > 0) {
+            game.intimacyCounter--;
+            if (game.intimacyCounter < 0) game.intimacyCounter = 0;
+          }
+
+          // Calculate glowball position - ALWAYS between players
+          game.glowBall.x = (game.blendCenter1.x + game.blendCenter2.x) / 2;
+          game.glowBall.y = (game.blendCenter1.y + game.blendCenter2.y) / 2;
+
+          // MODE-SPECIFIC glowball behavior
+          if (game.currentScene === MODE_START) {
+            if (game.intimacyCounter >= 100) {
+              game.glowBallRise = game.intimacyCounter * game.modeStartGlowRiseIntimacyFactor;
+              game.glowBallWidth = game.intimacyCounter * 0.1;
+              game.glowBall.y = game.glowBall.y - game.glowBallRise;
+            }
+          } else if (game.currentScene === MODE_PLAY) {
+            game.glowBallRise = game.playerDistance * game.modePlayGlowRiseFactor;
+            game.glowBallWidth = mapValue(game.playerDistance, 100, 700, 200, 5, true);
+          } else {
+            game.glowBallRise = 0;
+          }
+
+          // Update sparkle attract points
+          for (let p = 0; p < game.sparkles.length; p++) {
+            if (p < game.intimacyCounter) {
+              game.sparkles[p].setAttractPoint(game.glowBall);
+              game.sparkles[p].setColour(game.glowballColor.r, game.glowballColor.g, game.glowballColor.b);
+            } else {
+              game.sparkles[p].setAttractPoint(game.blobCenter1);
+              game.sparkles[p].setColour(255, 0, 255);
+            }
+            game.sparkles[p].update();
+          }
+
+          for (let p = 0; p < game.sparkles2.length; p++) {
+            if (p < game.intimacyCounter) {
+              game.sparkles2[p].setAttractPoint(game.glowBall);
+              game.sparkles2[p].setColour(game.glowballColor.r, game.glowballColor.g, game.glowballColor.b);
+            } else {
+              game.sparkles2[p].setAttractPoint(game.blobCenter2);
+              game.sparkles2[p].setColour(255, 0, 255);
+            }
+            game.sparkles2[p].update();
+          }
+        }
+
+        // Scene-specific updates
+        switch (game.currentScene) {
+          case MODE_TITLE_SCREEN:
+            if (game.handsDetected && game.playerDistance < INTIMACY_THRESHOLD) {
+              if (elapsedTime >= 4) {
+                game.currentScene = MODE_START;
+                game.sceneStartTime = Date.now();
+                // Start looping sounds
+                if (audioInitialized) {
+                  sounds.synth.play();
+                  sounds.beat.play();
+                }
+              }
+            }
+            break;
+
+          case MODE_START:
+            if (game.glowBall.y <= 0) {
+              if (elapsedTime >= 5) {
+                game.currentScene = MODE_TRANSITION;
+              }
+            }
+
+            // Update sound speeds based on player distance (matching original lines 214-220)
+            if (audioInitialized && Math.floor(elapsedTime * 60) % 60 === 0) {
+              const beatSpeed = mapValue(game.playerDistance, 100, 1200, 2.0, 0.2, true);
+              const popSpeed = mapValue(game.playerDistance, 100, 1200, 0.2, 2.5, true);
+              setSoundSpeed("beat", beatSpeed);
+              setSoundSpeed("pop", popSpeed);
+            }
+            break;
+
+          case MODE_TRANSITION:
+            game.currentScene = MODE_PLAY;
+            game.glowBall.y = 500;
+            break;
+
+          case MODE_PLAY:
+            game.scoreCounter += 0.1;
+
+            game.triangleSpeedIncrease = game.scoreCounter / 500;
+            game.triangleSpeed = mapValue(game.playerDistance, 100, 700, 0.5, 3.0, false) + game.triangleSpeedIncrease;
+            game.level.moveY(game.triangleSpeed);
+
+            // Check star collision with juice!
+            if (game.level.doesIntersectStar(game.glowBall, game.glowBallWidth)) {
+              game.scoreCounter += 100;
+              playSound("synth2"); // Play star collection sound!
+
+              // Pulse effect on glowball
+              const originalWidth = game.glowBallWidth;
+              game.glowBallWidth = originalWidth * 1.5;
+              setTimeout(() => {
+                game.glowBallWidth = originalWidth;
+              }, 150);
+            }
+
+            if (game.level.doesIntersectTriangle(game.glowBall, game.glowBallWidth)) {
+              game.badCollision = true;
+              playSound("pop"); // Pop sound on collision
+            }
+
+            if (game.badCollision) {
+              game.currentScene = MODE_GAME_OVER;
+              game.timeGameOverSceneStarted = getElapsedTimeMillis();
+
+              // Stop synth and play death sounds (matching original line 199-201)
+              if (audioInitialized) {
+                sounds.synth.pause();
+                playSound("fill");
+              }
+
+              for (let i = 0; i < NUM_SPARKLES; i++) {
+                game.sparkles[i].setMode(PARTICLE_MODE_REPEL);
+                game.sparkles2[i].setMode(PARTICLE_MODE_REPEL);
+              }
+
+              if (!game.newHighScore && game.scoreCounter > game.highScore) {
+                game.newHighScore = true;
+                game.highScore = game.scoreCounter;
+              }
+            }
+
+            // Update sound speeds based on player distance during play too
+            if (audioInitialized && Math.floor(elapsedTime * 60) % 60 === 0) {
+              const beatSpeed = mapValue(game.playerDistance, 100, 1200, 2.0, 0.2, true);
+              setSoundSpeed("beat", beatSpeed);
+            }
+            break;
+
+          case MODE_GAME_OVER:
+            for (let i = 0; i < NUM_SPARKLES; i++) {
+              game.sparkles[i].update();
+              game.sparkles2[i].update();
+            }
+
+            if (getElapsedTimeMillis() - game.timeGameOverSceneStarted > 5000) {
+              // Stop all sounds before resetting
+              if (audioInitialized) {
+                sounds.synth.pause();
+                sounds.beat.pause();
+                sounds.synth.currentTime = 0;
+                sounds.beat.currentTime = 0;
+              }
+              resetGame();
+              game.currentScene = MODE_TITLE_SCREEN;
+            }
+            break;
+        }
+      }
+
+      function mapValue(value, start1, stop1, start2, stop2, constrain = false) {
+        let mapped = start2 + (stop2 - start2) * ((value - start1) / (stop1 - start1));
+        if (constrain) {
+          return Math.max(Math.min(mapped, Math.max(start2, stop2)), Math.min(start2, stop2));
+        }
+        return mapped;
+      }
+
+      // ============================================
+      // GAME DRAW
+      // ============================================
+      function drawGame() {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        switch (game.currentScene) {
+          case MODE_TITLE_SCREEN:
+            drawTitleScreen();
+            break;
+          case MODE_START:
+            drawStartScreen();
+            break;
+          case MODE_PLAY:
+            drawPlayScreen();
+            break;
+          case MODE_GAME_OVER:
+            drawGameOverScreen();
+            break;
+        }
+
+        if (game.showInfo && game.bDrawDebug) {
+          drawDebugInfo();
+        }
+      }
+
+      function drawTitleScreen() {
+        ctx.fillStyle = "#ff00ff";
+        ctx.font = "60px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText("CLOSER", canvas.width / 2, 160);
+        ctx.font = "26px Georgia";
+        ctx.fillText("a cooperative game for two players", canvas.width / 2, 210);
+        ctx.fillStyle = "#0f0";
+        ctx.fillText("no touching!", canvas.width / 2, 680);
+
+        // Show click to enable sound message
+        if (!audioInitialized) {
+          ctx.fillStyle = "#00ff00";
+          ctx.font = "20px Georgia";
+          ctx.fillText("CLICK ANYWHERE TO ENABLE SOUND", canvas.width / 2, canvas.height - 50);
+        }
+      }
+
+      function drawStartScreen() {
+        for (let i = 0; i < NUM_SPARKLES; i++) {
+          game.sparkles[i].draw();
+          game.sparkles2[i].draw();
+        }
+
+        if (game.handsDetected) {
+          ctx.fillStyle = "rgba(255, 0, 255, 0.04)";
+          for (let i = 0; i < 10; i++) {
+            ctx.beginPath();
+            ctx.arc(game.blendCenter1.x, game.blendCenter1.y, game.radiusOfBlob1 + i * 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(game.blendCenter2.x, game.blendCenter2.y, game.radiusOfBlob2 + i * 5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.strokeStyle = "rgba(255, 0, 255, 0.78)";
+          ctx.lineWidth = 30;
+          ctx.beginPath();
+          ctx.arc(game.blendCenter1.x, game.blendCenter1.y, game.radiusOfBlob1, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(game.blendCenter2.x, game.blendCenter2.y, game.radiusOfBlob2, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.strokeStyle = "rgba(255, 0, 255, 0.3)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(game.blendCenter1.x, game.blendCenter1.y);
+          ctx.lineTo(game.blendCenter2.x, game.blendCenter2.y);
+          ctx.stroke();
+
+          if (game.intimacyCounter >= 100 && game.glowBallWidth > 0) {
+            ctx.fillStyle = `rgba(${game.glowballColor.r}, ${game.glowballColor.g}, ${game.glowballColor.b}, ${game.glowballTransparency / 255})`;
+            ctx.beginPath();
+            ctx.arc(game.glowBall.x, game.glowBall.y, game.glowBallWidth, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        ctx.fillStyle = "#ff00ff";
+        ctx.font = "60px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText("CLOSER", canvas.width / 2, 160);
+        ctx.font = "26px Georgia";
+        ctx.fillText("a cooperative game for two players", canvas.width / 2, 210);
+        ctx.fillStyle = "#0f0";
+        ctx.fillText("no touching!", canvas.width / 2, 680);
+
+        // Show click to enable sound message
+        if (!audioInitialized) {
+          ctx.fillStyle = "#00ff00";
+          ctx.font = "20px Georgia";
+          ctx.fillText("CLICK ANYWHERE TO ENABLE SOUND", canvas.width / 2, canvas.height - 50);
+        }
+      }
+
+      function drawPlayScreen() {
+        game.level.draw();
+
+        for (let i = 0; i < NUM_SPARKLES; i++) {
+          game.sparkles[i].draw();
+          game.sparkles2[i].draw();
+        }
+
+        ctx.fillStyle = `rgba(${game.glowballColor.r}, ${game.glowballColor.g}, ${game.glowballColor.b}, ${game.glowballTransparency / 255})`;
+        ctx.beginPath();
+        ctx.arc(game.glowBall.x, game.glowBall.y, game.glowBallWidth, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#0f0";
+        ctx.font = "26px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText(Math.floor(game.scoreCounter).toString(), canvas.width / 2 + 10, 160);
+      }
+
+      function drawGameOverScreen() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#ff00ff";
+        ctx.font = "60px Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText("GAME OVER", canvas.width / 2, 400);
+
+        ctx.font = "26px Georgia";
+        const scoreText = `your score ${Math.floor(game.scoreCounter)} :: high score ${Math.floor(game.highScore)}`;
+        ctx.fillText(scoreText, canvas.width / 2, 550);
+
+        if (game.newHighScore) {
+          ctx.fillText("new high score!", canvas.width / 2, 500);
+        } else {
+          ctx.fillText("TRY AGAIN?", canvas.width / 2, 650);
+        }
+
+        for (let i = 0; i < NUM_SPARKLES; i++) {
+          game.sparkles[i].draw();
+          game.sparkles2[i].draw();
+        }
+      }
+
+      function drawDebugInfo() {
+        ctx.fillStyle = "#0f0";
+        ctx.font = "12px monospace";
+        ctx.textAlign = "left";
+
+        const info = [
+          `Scene: ${["TITLE", "START", "TRANSITION", "PLAY", "GAME OVER"][game.currentScene]}`,
+          `Players: ${game.handsDetected}`,
+          `Distance: ${Math.floor(game.playerDistance)}`,
+          `Intimacy: ${game.intimacyCounter}`,
+          `Score: ${Math.floor(game.scoreCounter)}`,
+          `GlowBall: (${Math.floor(game.glowBall.x)}, ${Math.floor(game.glowBall.y)}) w:${Math.floor(game.glowBallWidth)}`,
+          `Triangle Speed: ${game.triangleSpeed?.toFixed(3) || 0}`,
+          `Elapsed: ${elapsedTime.toFixed(1)}s`,
+        ];
+
+        info.forEach((line, i) => {
+          ctx.fillText(line, 10, canvas.height - 150 + i * 15);
+        });
+      }
+
+      // ============================================
+      // GAME LOOP
+      // ============================================
+      function gameLoop() {
+        updateGame();
+        drawGame();
+        requestAnimationFrame(gameLoop);
+      }
+
+      // ============================================
+      // KEYBOARD CONTROLS
+      // ============================================
+      document.addEventListener("keydown", (e) => {
+        switch (e.key.toLowerCase()) {
+          case "d":
+            game.bDrawDebug = !game.bDrawDebug;
+            document.getElementById("debugPanel").classList.toggle("active", game.bDrawDebug);
+            break;
+          case "r":
+            resetGame();
+            game.currentScene = MODE_START;
+            break;
+          case "p":
+            game.currentScene = MODE_PLAY;
+            break;
+          case "f":
+            if (!document.fullscreenElement) {
+              document.documentElement.requestFullscreen();
+            } else {
+              document.exitFullscreen();
+            }
+            break;
+          case "i":
+            game.showInfo = !game.showInfo;
+            break;
+        }
+      });
+
+      document.getElementById("showVideo").addEventListener("change", (e) => {
+        document.getElementById("videoDebug").classList.toggle("active", e.target.checked);
+      });
+
+      document.getElementById("singlePlayerMode").addEventListener("change", (e) => {
+        game.singlePlayerMode = e.target.checked;
+      });
+
+      document.getElementById("showInfo").addEventListener("change", (e) => {
+        game.showInfo = e.target.checked;
+      });
+
+      document.getElementById("mirrorScreen").addEventListener("change", (e) => {
+        game.mirrorScreen = e.target.checked;
+      });
+
+      // ============================================
+      // START GAME
+      // ============================================
+      initMediaPipe()
+        .then(() => {
+          console.log("Game initialized!");
+          resetGame();
+          gameLoop();
+        })
+        .catch((error) => {
+          console.error("Failed to initialize:", error);
+        });
+    </script>
+  </body>
+</html>
