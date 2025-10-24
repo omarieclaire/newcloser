@@ -175,6 +175,25 @@
       const PARTICLE_MODE_NOISE = 3;
 
       // ============================================
+      // MESSAGE TIMING & TEXT CONFIGURATION
+      // ============================================
+      const MESSAGE_CONFIG = {
+        // Delays (in seconds) before showing hints
+        WAITING_FOR_SECOND_PLAYER_DELAY: 5,
+        GET_CLOSER_HINT_DELAY: 8,
+        RISING_BALL_MESSAGE_DELAY: 3,
+
+        // Messages (edit these for tone/language)
+        LOADING: "Loading...",
+        SHOW_HANDS_SINGLE: "Show your hands",
+        SHOW_HANDS_TWO: "Awaiting presence...",
+        WAITING_SECOND_PLAYER: "Seeking another...",
+        GET_CLOSER: "Stand close to your friend",
+        RISING_BALL: "Almost there",
+        CLICK_FOR_SOUND: "Touch the screen for sound",
+      };
+
+      // ============================================
       // AUDIO SYSTEM - Using Original Sound Files
       // ============================================
       const sounds = {
@@ -268,6 +287,7 @@
       // Game state
       let game = {
         currentScene: MODE_TITLE_SCREEN,
+        sceneStateTime: 0,
         intimacyCounter: 0,
         scoreCounter: 0,
         highScore: 0,
@@ -544,7 +564,7 @@
 
           const screenHeight = canvas.height;
 
-          if (this.a.y >= screenHeight) {
+          if (this.a.y >= screenHeight + 100) {
             const height = Math.abs(this.a.y - this.c.y);
             this.a.y = 0 - LEVEL_HEIGHT;
             this.b.y = this.a.y + height / 2;
@@ -735,6 +755,8 @@
       // POSE DETECTION
       // ============================================
       function onPoseResults(results) {
+        window.lastPoseResults = results;
+
         if (results.poseLandmarks) {
           const landmarks = results.poseLandmarks;
 
@@ -786,65 +808,61 @@
           game.handsDetected = false;
         }
 
-     // Draw debug video
-if (game.bDrawDebug && document.getElementById("showVideo").checked) {
-  videoCtx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
-  
-  // Video drawing (keep as is - it's working correctly)
-  videoCtx.save();
-  if (game.mirrorScreen) {
-    videoCtx.scale(-1, 1);
-    videoCtx.drawImage(videoEl, -videoCanvas.width, 0, videoCanvas.width, videoCanvas.height);
-  } else {
-    videoCtx.drawImage(videoEl, 0, 0, videoCanvas.width, videoCanvas.height);
-  }
-  videoCtx.restore();
-  
-  if (results.poseLandmarks) {
-    // Simple: just use the landmarks directly - they should match the video
-    drawConnectors(videoCtx, results.poseLandmarks, POSE_CONNECTIONS, {
-      color: "#00ff00",
-      lineWidth: 2,
-    });
-    drawLandmarks(videoCtx, results.poseLandmarks, {
-      color: "#ff0000",
-      lineWidth: 1,
-      radius: 3,
-    });
-    
-    // Draw pink circles where the game thinks the hands are
-    if (game.singlePlayerMode && results.poseLandmarks[15] && results.poseLandmarks[16]) {
-      const mirrorFactor = game.mirrorScreen ? 1 : -1;
-      
-      videoCtx.fillStyle = "rgba(255, 0, 255, 0.5)";
-      
-      // Left hand (landmark 15)
-      const hand1X = (0.5 + mirrorFactor * (results.poseLandmarks[15].x - 0.5)) * videoCanvas.width;
-      const hand1Y = results.poseLandmarks[15].y * videoCanvas.height;
-      videoCtx.beginPath();
-      videoCtx.arc(hand1X, hand1Y, 10, 0, Math.PI * 2);
-      videoCtx.fill();
-      
-      // Right hand (landmark 16)
-      const hand2X = (0.5 + mirrorFactor * (results.poseLandmarks[16].x - 0.5)) * videoCanvas.width;
-      const hand2Y = results.poseLandmarks[16].y * videoCanvas.height;
-      videoCtx.beginPath();
-      videoCtx.arc(hand2X, hand2Y, 10, 0, Math.PI * 2);
-      videoCtx.fill();
-    }
-  }
-}
+        // Draw debug video
+        if (game.bDrawDebug && document.getElementById("showVideo").checked) {
+          videoCtx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+
+          // Video drawing (keep as is - it's working correctly)
+          videoCtx.save();
+          if (game.mirrorScreen) {
+            videoCtx.scale(-1, 1);
+            videoCtx.drawImage(videoEl, -videoCanvas.width, 0, videoCanvas.width, videoCanvas.height);
+          } else {
+            videoCtx.drawImage(videoEl, 0, 0, videoCanvas.width, videoCanvas.height);
+          }
+          videoCtx.restore();
+
+          if (results.poseLandmarks) {
+            drawConnectors(videoCtx, results.poseLandmarks, POSE_CONNECTIONS, {
+              color: "#00ff00",
+              lineWidth: 2,
+            });
+            drawLandmarks(videoCtx, results.poseLandmarks, {
+              color: "#ff0000",
+              lineWidth: 1,
+              radius: 3,
+            });
+
+            // Draw pink circles where the game thinks the hands are
+            if (game.singlePlayerMode && results.poseLandmarks[15] && results.poseLandmarks[16]) {
+              const mirrorFactor = game.mirrorScreen ? 1 : -1;
+
+              videoCtx.fillStyle = "rgba(255, 0, 255, 0.5)";
+
+              // Left hand (landmark 15)
+              const hand1X = (0.5 + mirrorFactor * (results.poseLandmarks[15].x - 0.5)) * videoCanvas.width;
+              const hand1Y = results.poseLandmarks[15].y * videoCanvas.height;
+              videoCtx.beginPath();
+              videoCtx.arc(hand1X, hand1Y, 10, 0, Math.PI * 2);
+              videoCtx.fill();
+
+              // Right hand (landmark 16)
+              const hand2X = (0.5 + mirrorFactor * (results.poseLandmarks[16].x - 0.5)) * videoCanvas.width;
+              const hand2Y = results.poseLandmarks[16].y * videoCanvas.height;
+              videoCtx.beginPath();
+              videoCtx.arc(hand2X, hand2Y, 10, 0, Math.PI * 2);
+              videoCtx.fill();
+            }
+          }
+        }
       }
 
-      // ============================================
-      // RESET GAME - EXACT COPY
-      // ============================================
       function resetGame() {
         game.playerDistance = 0;
         game.blendCenter1 = { x: 0, y: 0 };
         game.blendCenter2 = { x: 0, y: 0 };
         game.currentScene = MODE_TITLE_SCREEN;
-
+        game.sceneStateTime = Date.now();
         game.glowballColor = { r: 0, g: 0, b: 255 };
         game.triangleInteriorColor = { r: 255, g: 0, b: 255, a: 100 };
         game.triangleOutlineColor = { r: 255, g: 10, b: 255, a: 200 };
@@ -1013,6 +1031,51 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
       }
 
       // ============================================
+      // HELPER: Get time in current state
+      // ============================================
+      function getStateTime() {
+        return (Date.now() - game.sceneStateTime) / 1000;
+      }
+
+      // ============================================
+      // HELPER: Determine what message to show
+      // ============================================
+      function getCurrentMessage() {
+        const stateTime = getStateTime();
+
+        if (game.currentScene === MODE_TITLE_SCREEN) {
+          // Always show these immediately
+          if (!game.handsDetected) {
+            return game.singlePlayerMode ? MESSAGE_CONFIG.SHOW_HANDS_SINGLE : MESSAGE_CONFIG.SHOW_HANDS_TWO;
+          }
+
+          // Player(s) detected - wait before showing hints
+          if (game.singlePlayerMode) {
+            // Single player mode - both hands detected, ready to go
+            if (stateTime > MESSAGE_CONFIG.GET_CLOSER_HINT_DELAY) {
+              return MESSAGE_CONFIG.GET_CLOSER;
+            }
+          } else {
+            // Two player mode - check if we need second player
+            if (stateTime > MESSAGE_CONFIG.WAITING_FOR_SECOND_PLAYER_DELAY) {
+              return MESSAGE_CONFIG.WAITING_SECOND_PLAYER;
+            }
+            if (stateTime > MESSAGE_CONFIG.GET_CLOSER_HINT_DELAY) {
+              return MESSAGE_CONFIG.GET_CLOSER;
+            }
+          }
+        }
+
+        if (game.currentScene === MODE_START) {
+          if (game.intimacyCounter >= 100 && stateTime > MESSAGE_CONFIG.RISING_BALL_MESSAGE_DELAY) {
+            return MESSAGE_CONFIG.RISING_BALL;
+          }
+        }
+
+        return null; // No message
+      }
+
+      // ============================================
       // GAME UPDATE - MATCHING ORIGINAL FLOW
       // ============================================
       function updateGame() {
@@ -1128,6 +1191,7 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
               if (elapsedTime >= 4) {
                 game.currentScene = MODE_START;
                 game.sceneStartTime = Date.now();
+                game.sceneStateTime = Date.now(); // ADD THIS LINE
                 // Start looping sounds
                 if (audioInitialized) {
                   sounds.synth.play();
@@ -1268,21 +1332,119 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
       }
 
       function drawTitleScreen() {
-        ctx.fillStyle = "#ff00ff";
-        ctx.font = "60px Georgia";
-        ctx.textAlign = "center";
-        ctx.fillText("CLOSER", canvas.width / 2, 160);
-        ctx.font = "26px Georgia";
-        ctx.fillText("a cooperative game for two players", canvas.width / 2, 210);
-        ctx.fillStyle = "#0f0";
-        ctx.fillText("no touching!", canvas.width / 2, 680);
+        // ALWAYS draw sparkles and player circles/outlines if detected
+        if (game.handsDetected) {
+          // Draw sparkles
+          for (let i = 0; i < NUM_SPARKLES; i++) {
+            game.sparkles[i].draw();
+            game.sparkles2[i].draw();
+          }
 
-        // Show click to enable sound message
-        if (!audioInitialized) {
-          ctx.fillStyle = "#00ff00";
-          ctx.font = "20px Georgia";
-          ctx.fillText("CLICK ANYWHERE TO ENABLE SOUND", canvas.width / 2, canvas.height - 50);
+          // Draw body outlines
+          drawBodyOutline();
         }
+
+        // TITLE
+        ctx.fillStyle = "#ff00ff";
+        ctx.font = "bold 12vw Georgia";
+        ctx.textAlign = "center";
+        ctx.fillText("CLOSER", canvas.width / 2, canvas.height * 0.25);
+
+        // Subtitle
+        ctx.font = "32px Georgia";
+        ctx.fillText("a cooperative game for two players", canvas.width / 2, canvas.height * 0.25 + 60);
+
+        // Rules - bright green, punchy
+        ctx.fillStyle = "#0f0";
+        ctx.font = "bold 48px Georgia";
+        // ctx.fillText("no touching!", canvas.width / 2, canvas.height * 0.75);
+
+        // Show contextual hint message (with timing) - lower, cyan, smaller
+        const message = getCurrentMessage();
+        if (message) {
+          ctx.fillStyle = "#0f0";
+          ctx.font = "28px Georgia";
+          ctx.fillText(message, canvas.width / 2, canvas.height * 0.85);
+        }
+
+        // Show click to enable sound message - very bottom, small
+        if (!audioInitialized) {
+          ctx.fillStyle = "#0f0";
+          ctx.font = "18px Georgia";
+          ctx.fillText(MESSAGE_CONFIG.CLICK_FOR_SOUND, canvas.width / 2, canvas.height - 30);
+        }
+      }
+
+      function drawBodyOutline() {
+        if (!window.lastPoseResults || !window.lastPoseResults.poseLandmarks) return;
+
+        const landmarks = window.lastPoseResults.poseLandmarks;
+        const mirrorFactor = game.mirrorScreen ? 1 : -1;
+
+        function toScreen(landmark) {
+          return {
+            x: (0.5 + mirrorFactor * (landmark.x - 0.5)) * canvas.width,
+            y: landmark.y * canvas.height,
+          };
+        }
+
+        // Create a smooth blob outline around the body
+        const leftSide = [
+          0, // nose
+          7, // left ear
+          11, // left shoulder
+          13, // left elbow
+          15, // left wrist
+          13, // back to elbow
+          11, // back to shoulder
+          23, // left hip
+          25, // left knee
+          27, // left ankle
+        ];
+
+        const rightSide = [
+          28, // right ankle
+          26, // right knee
+          24, // right hip
+          12, // right shoulder
+          14, // right elbow
+          16, // right wrist
+          14, // back to elbow
+          12, // back to shoulder
+          8, // right ear
+          0, // back to nose
+        ];
+
+        // Draw filled blob with thin glowing outline
+        ctx.fillStyle = "rgba(255, 0, 255, 0.05)";
+        ctx.strokeStyle = "rgba(255, 0, 255, 0.3)";
+        ctx.lineWidth = 3;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.shadowBlur = 30;
+        ctx.shadowColor = "rgba(255, 0, 255, 0.8)";
+
+        // Draw the blob
+        ctx.beginPath();
+        const firstPoint = toScreen(landmarks[leftSide[0]]);
+        ctx.moveTo(firstPoint.x, firstPoint.y);
+
+        // Left side
+        for (let i = 1; i < leftSide.length; i++) {
+          const point = toScreen(landmarks[leftSide[i]]);
+          ctx.lineTo(point.x, point.y);
+        }
+
+        // Right side
+        for (let i = 0; i < rightSide.length; i++) {
+          const point = toScreen(landmarks[rightSide[i]]);
+          ctx.lineTo(point.x, point.y);
+        }
+
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0; // Reset
       }
 
       function drawStartScreen() {
@@ -1292,31 +1454,7 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
         }
 
         if (game.handsDetected) {
-          ctx.fillStyle = "rgba(255, 0, 255, 0.04)";
-          for (let i = 0; i < 10; i++) {
-            ctx.beginPath();
-            ctx.arc(game.blendCenter1.x, game.blendCenter1.y, game.radiusOfBlob1 + i * 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.arc(game.blendCenter2.x, game.blendCenter2.y, game.radiusOfBlob2 + i * 5, 0, Math.PI * 2);
-            ctx.fill();
-          }
-
-          ctx.strokeStyle = "rgba(255, 0, 255, 0.78)";
-          ctx.lineWidth = 30;
-          ctx.beginPath();
-          ctx.arc(game.blendCenter1.x, game.blendCenter1.y, game.radiusOfBlob1, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(game.blendCenter2.x, game.blendCenter2.y, game.radiusOfBlob2, 0, Math.PI * 2);
-          ctx.stroke();
-
-          ctx.strokeStyle = "rgba(255, 0, 255, 0.3)";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(game.blendCenter1.x, game.blendCenter1.y);
-          ctx.lineTo(game.blendCenter2.x, game.blendCenter2.y);
-          ctx.stroke();
+          drawBodyOutline();
 
           if (game.intimacyCounter >= 100 && game.glowBallWidth > 0) {
             ctx.fillStyle = `rgba(${game.glowballColor.r}, ${game.glowballColor.g}, ${game.glowballColor.b}, ${game.glowballTransparency / 255})`;
@@ -1326,20 +1464,34 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
           }
         }
 
-        ctx.fillStyle = "#ff00ff";
-        ctx.font = "60px Georgia";
-        ctx.textAlign = "center";
-        ctx.fillText("CLOSER", canvas.width / 2, 160);
-        ctx.font = "26px Georgia";
-        ctx.fillText("a cooperative game for two players", canvas.width / 2, 210);
+        // TITLE - stays visible but smaller
+        // ctx.fillStyle = "#ff00ff";
+        // ctx.font = "bold 8vw Georgia";
+        // ctx.textAlign = "center";
+        // ctx.fillText("CLOSER", canvas.width / 2, canvas.height * 0.25);
+
+        // Subtitle
+        // ctx.font = "italic 24px Georgia";
+        // ctx.fillText("a cooperative game for two players", canvas.width / 2, 140);
+
+        // Rules - bottom
         ctx.fillStyle = "#0f0";
-        ctx.fillText("no touching!", canvas.width / 2, 680);
+        ctx.font = "bold 36px Georgia";
+        // ctx.fillText("no touching!", canvas.width / 2, canvas.height - 80);
+
+        // Show contextual message - CENTER of screen, BIG
+        const message = getCurrentMessage();
+        if (message) {
+          ctx.fillStyle = "#0f0";
+          ctx.font = "42px Georgia";
+          ctx.fillText(message, canvas.width / 2, canvas.height * 0.15);
+        }
 
         // Show click to enable sound message
         if (!audioInitialized) {
-          ctx.fillStyle = "#00ff00";
-          ctx.font = "20px Georgia";
-          ctx.fillText("CLICK ANYWHERE TO ENABLE SOUND", canvas.width / 2, canvas.height - 50);
+          ctx.fillStyle = "#0f0";
+          ctx.font = "18px Georgia";
+          ctx.fillText(MESSAGE_CONFIG.CLICK_FOR_SOUND, canvas.width / 2, canvas.height - 30);
         }
       }
 
@@ -1351,15 +1503,20 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
           game.sparkles2[i].draw();
         }
 
+        // Draw body outlines during play too!
+        if (game.handsDetected) {
+          drawBodyOutline();
+        }
+
         ctx.fillStyle = `rgba(${game.glowballColor.r}, ${game.glowballColor.g}, ${game.glowballColor.b}, ${game.glowballTransparency / 255})`;
         ctx.beginPath();
         ctx.arc(game.glowBall.x, game.glowBall.y, game.glowBallWidth, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.fillStyle = "#0f0";
-        ctx.font = "26px Georgia";
         ctx.textAlign = "center";
-        ctx.fillText(Math.floor(game.scoreCounter).toString(), canvas.width / 2 + 10, 160);
+        ctx.font = "bold 3vw Georgia";
+        ctx.fillText(Math.floor(game.scoreCounter).toString(), canvas.width / 2, canvas.height * 0.05);
       }
 
       function drawGameOverScreen() {
@@ -1367,7 +1524,7 @@ if (game.bDrawDebug && document.getElementById("showVideo").checked) {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         ctx.fillStyle = "#ff00ff";
-        ctx.font = "60px Georgia";
+        ctx.font = "bold 12vw Georgia";
         ctx.textAlign = "center";
         ctx.fillText("GAME OVER", canvas.width / 2, 400);
 
